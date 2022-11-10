@@ -1,0 +1,237 @@
+#include <queue>
+#include <fstream>
+#include <iostream>
+#include <boost/thread.hpp>
+#include <boost/chrono.hpp>
+#include <boost/regex.hpp>
+#include <boost/filesystem.hpp>
+//---------------------------------------------------------------------------------------------------
+using namespace std;
+//---------------------------------------------------------------------------------------------------
+//Инициализируем общие переменные
+ifstream the_file;
+boost::mutex the_mutex;
+queue<string> the_queue1, the_queue2;
+//---------------------------------------------------------------------------------------------------
+//Процедура, осуществляющая построчное считывание файла
+void str_red(const string& pstr, const int& pstr_size) {
+   int nam;
+   string str;
+
+   while (getline(the_file, str)) {
+      nam++;
+
+      if (str.size() < pstr_size) {
+         nam--;
+         continue;
+      }
+
+      the_mutex.lock();
+      the_queue1.push(str);
+      the_mutex.unlock();
+   }
+
+   if (the_file.bad()) {
+
+      the_mutex.lock();
+      while (!the_queue1.empty())
+         the_queue1.pop();
+
+      while (!the_queue2.empty())
+         the_queue2.pop();
+      the_mutex.unlock();
+
+      cout << "File cannot be read!" << endl;
+      return;
+   }
+   else {
+      the_mutex.lock();
+      the_file.close();
+      the_mutex.unlock();
+   }
+
+   if (nam == 0)
+      cout << "0" << endl;
+}
+//---------------------------------------------------------------------------------------------------
+//Процедура, осуществляющая проверку текста в файле на соответствие кодировке ASCII
+void str_ascii() {
+   string str;
+
+   while (the_queue1.empty()) {
+
+      if (!the_file.is_open())
+         return;
+
+      boost::this_thread::sleep_for(boost::chrono::nanoseconds(1));
+   }
+
+   while (!the_queue1.empty()) {
+      the_mutex.lock();
+      str = the_queue1.front();
+      the_mutex.unlock();
+
+      for (int i = 0; i < str.size(); i++)
+         if (int(str[i]) < 0 || int(str[i]) > 127) {
+
+            the_mutex.lock();
+            while (!the_queue1.empty())
+               the_queue1.pop();
+
+            while (!the_queue2.empty())
+               the_queue2.pop();
+
+            the_file.close();
+            the_mutex.unlock();
+
+            cout << "Warning. The text in the file contains non-ASCII characters!\n"
+                  << "Program closed completed." << endl;
+            return;
+         }
+
+      the_mutex.lock();
+      if (!the_queue1.empty()) {
+         the_queue2.push(str);
+         the_queue1.pop();
+      }
+      the_mutex.unlock();
+
+      while (the_queue1.empty() && the_file.is_open())
+         boost::this_thread::sleep_for(boost::chrono::nanoseconds(1));
+   }
+}
+//---------------------------------------------------------------------------------------------------
+//Процедура, осуществляющая поиск подстроки в тексте файла по маске
+void str_pstr(const string& pstr) {
+   int nam, schet_pstr;
+   string str, nam_str, fin_str, str_prefix;
+   queue<string> fin_queue;
+   boost::smatch match;
+
+   while (the_queue2.empty()) {
+
+      if (!the_file.is_open() && the_queue1.empty())
+         return;
+
+      boost::this_thread::sleep_for(boost::chrono::nanoseconds(1));
+   }
+
+   while (!the_queue2.empty()) {
+      nam++;
+
+      the_mutex.lock();
+      if (!the_queue2.empty()) {
+         str = the_queue2.front();
+         the_queue2.pop();
+      }
+      the_mutex.unlock();
+
+      if (the_file.bad())
+         return;
+      else if (boost::regex_search(str, match, boost::regex(pstr), boost::match_any)) {
+         schet_pstr++;
+         nam_str = to_string(nam);
+         str_prefix = to_string(match.prefix().str().size() + 1);
+         fin_str = nam_str + " " + str_prefix + " " + match[0];
+         fin_queue.push(fin_str);
+      }
+
+      while (the_queue2.empty() && !the_queue1.empty())
+         boost::this_thread::sleep_for(boost::chrono::nanoseconds(1));
+   }
+
+   cout << schet_pstr << endl;
+
+   while (!fin_queue.empty()) {
+      cout << fin_queue.front() << endl;
+      fin_queue.pop();
+   }
+}
+//---------------------------------------------------------------------------------------------------
+int main(int argc, char *argv[]) {
+
+   //Инициализируем переменные
+   int pstr_size;
+   string pstr, reg_str, str_text;
+   boost::uintmax_t filesize;
+   boost::thread_group threads;
+   boost::system::error_code ec;
+
+   //Проверяем количество переданных аргументов
+   if (argc != 3) {
+      cout << "Invalid number of arguments. Please pass two arguments!" << endl;
+      return 1;
+   }
+
+   //Проверяем на соответствие аргумент размер файла (до 1Гб)
+   filesize = boost::filesystem::file_size(argv[1], ec);
+
+   if (ec || filesize > 1e+9) {
+      cout << "Unable to find file size or file size larger than 1GB!" << endl;
+      return 1;
+   }
+
+   //Проверяем на соответствие аргумент искомой подстроки
+   pstr = argv[2];
+
+   //(макс длина 1000 символов)
+   if (pstr.size() > 1e+3) {
+      cout << "The maximum length of the second argument must not exceed 1000 characters!" << endl;
+      return 1;
+   }
+
+   //(кодировка только ASCII)
+   for (int i = 0; i < pstr.size(); i++)
+      if (int(pstr[i]) < 0 || int(pstr[i]) > 127) {
+         cout << "Second argument encoding only ASCII!" << endl;
+         return 1;
+      }
+
+   //Создаём регулярное выражение для поиска (POSIX)
+   reg_str = "\\.|*+(){}[]^$?";
+
+   if (pstr[0] == '"')
+      pstr.erase(0, 1);
+
+   if (pstr[pstr.size() - 1] == '"')
+      pstr.erase(pstr.size() - 1, 1);
+
+   pstr_size = pstr.size();
+
+   for (int i = 0, n = 0; i < reg_str.size(); i++) {
+      str_text = pstr;
+      n = 0;
+
+      for (int j = 0; j < str_text.size(); j++) {
+
+         if (reg_str[i] == str_text[j]) {
+
+            if (reg_str[i] == '?')
+               pstr[j+n] = '.';
+
+            if (reg_str[i] != '?') {
+               pstr.insert(j+n, "\\");
+               n++;
+            }
+         }
+      }
+   }
+
+   //Открываем файл для чтения
+   the_file.open(argv[1]);
+   if (!the_file.is_open()) {
+      cout << "File cannot be opened!" << endl;
+      return -1;
+   }
+
+   //Создаём три потока и передаём им необходимые процедуры
+   threads.create_thread(boost::bind(str_red, pstr, pstr_size));
+   threads.create_thread(str_ascii);
+   threads.create_thread(boost::bind(str_pstr, pstr));
+
+   //Ожидаем завершение работы созданных потоков
+   threads.join_all();
+
+   return 0;
+}
+//---------------------------------------------------------------------------------------------------
